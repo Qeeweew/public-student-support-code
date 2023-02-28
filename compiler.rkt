@@ -181,11 +181,46 @@
 
 ;; assign-homes : pseudo-x86 -> pseudo-x86
 (define (assign-homes p)
-  (error "TODO: code goes here (assign-homes)"))
+  (match p
+    [(X86Program info body)
+     (X86Program
+      info
+      (let* ([entry (cdar info)]
+             [var-index (for/list
+                            ([t (cdar info)]
+                             [i (build-list (length entry) (lambda (x) (- (* (+ x 1) 8))))])
+                          (cons (car t) i))])
+        (define (assign-arg arg)
+          (match arg
+            [(Var x) (Deref 'rbp (dict-ref var-index x))]
+            [else arg]))
+        (define (assign-instr instr)
+          (match instr
+            [(Instr op es) (Instr op (map assign-arg es))]
+            [else instr]))
+        (define (assign-block block)
+          (match block
+            [(Block info instrs) (Block info (map assign-instr instrs))]))
+        (map (lambda (t) ;; label . block
+               (cons (car t) (assign-block (cdr t))))
+             body)))]))
 
 ;; patch-instructions : psuedo-x86 -> x86
 (define (patch-instructions p)
-  (error "TODO: code goes here (patch-instructions)"))
+  (match p
+    [(X86Program info body)
+     (X86Program
+      info
+      (define (assign-instr instr)
+        (match instr
+          [(Instr op es) (Instr op (map assign-arg es))]
+          [else instr]))
+        (define (assign-block block)
+          (match block
+            [(Block info instrs) (Block info (map assign-instr instrs))]))
+        (map (lambda (t) ;; label . block
+               (cons (car t) (assign-block (cdr t))))
+             body)))]))
 
 ;; prelude-and-conclusion : x86 -> x86
 (define (prelude-and-conclusion p)
@@ -200,7 +235,7 @@
      ("remove complex opera*" ,remove-complex-opera* ,interp-Lvar ,type-check-Lvar)
      ("explicate control" ,explicate-control ,interp-Cvar ,type-check-Cvar)
      ("instruction selection" ,select-instructions ,interp-x86-0)
-     ;; ("assign homes" ,assign-homes ,interp-x86-0)
+     ("assign homes" ,assign-homes ,interp-x86-0)
      ;; ("patch instructions" ,patch-instructions ,interp-x86-0)
      ;; ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-0)
      ))

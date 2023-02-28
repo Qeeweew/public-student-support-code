@@ -4,6 +4,7 @@
 (require "interp-Lint.rkt")
 (require "interp-Lvar.rkt")
 (require "interp-Cvar.rkt")
+(require "interp.rkt")
 (require "type-check-Lvar.rkt")
 (require "type-check-Cvar.rkt")
 (require "utilities.rkt")
@@ -58,10 +59,11 @@
   (lambda (e)
     (match e
       [(Var x)
-       (error "TODO: code goes here (uniquify-exp, symbol?)")]
+       (Var (dict-ref env x))]
       [(Int n) (Int n)]
       [(Let x e body)
-       (error "TODO: code goes here (uniquify-exp, let)")]
+       (let ([sym (gensym)])
+            (Let sym ((uniquify-exp env) e) ((uniquify-exp (dict-set env x sym)) body)))]
       [(Prim op es)
        (Prim op (for/list ([e es]) ((uniquify-exp env) e)))])))
 
@@ -72,15 +74,110 @@
 
 ;; remove-complex-opera* : R1 -> R1
 (define (remove-complex-opera* p)
-  (error "TODO: code goes here (remove-complex-opera*)"))
+  (define (rco-exp e)
+    (match e
+      [(Let x ex body)
+       (let ([exp1 (rco-exp ex)]
+             [exp2 (rco-exp body)])
+         (Let x exp1 exp2))]
+      [(Prim op es)
+       (let ([res (map rco-atom es)])
+         (foldl (lambda (kv exp)
+                  (Let (car kv) (cdr kv) exp))
+                (Prim op (map car res))
+                (apply append (map cdr res))))]
+      [else e]))
+  (define (rco-atom e) ; return an atom and Association Lists map sym to exp
+    (match e
+      [(Let x ex body)
+       (let ([exp1 (rco-exp ex)]
+             [exp2 (rco-exp body)]
+             [y (gensym)])
+         (cons (Var y)
+               (list (cons y exp2) (cons x exp1))))]
+      [(Prim op es)
+       (let ([sym (gensym)]
+             [res (map rco-atom es)])
+         (cons
+          (Var sym)
+          (cons
+           (cons sym (Prim op (map car res))) ; Prim op with atom
+           (apply append (map cdr res)))))] ; concat list
+      [else (cons e '())])) ;; Int or Var
+  (match p
+    [(Program info e) (Program info (rco-exp e))]))
 
 ;; explicate-control : R1 -> C0
 (define (explicate-control p)
-  (error "TODO: code goes here (explicate-control)"))
+  (define (explicate-tail e)
+    (match e
+      [(Let x rhs body) (explicate-assign rhs x (explicate-tail body))]
+      [else (Return e)])) ;; Var | Int | Prim
+  (define (bind-let cont0 cont1 x) ; need to extract last return
+    (match cont0
+      [(Return val) (Seq (Assign (Var x) val) cont1)]
+      [(Seq stmt tail) (Seq stmt (bind-let tail cont1 x))]))
+  (define (explicate-assign e x cont)
+    (match e
+      [(Let y rhs body)
+       (explicate-assign rhs y
+                         (bind-let (explicate-tail body) cont x))] ; monad
+      [else (Seq (Assign (Var x) e) cont)])) ;; Var | Int | Prim
+  (match p
+      [(Program info body) (CProgram info (list (cons 'start (explicate-tail body))))]))
 
 ;; select-instructions : C0 -> pseudo-x86
 (define (select-instructions p)
-  (error "TODO: code goes here (select-instructions)"))
+  (define (select-atm p)
+    (match p
+      [(Int x) (Imm x)]
+      [(Var x) (Var x)]
+      [else (error 'atm "~s" p)]))
+  (define (select-stmt p)
+    (match p
+      [(Assign vx exp)
+       (match exp
+         [(Int _) (list (Instr 'movq (list (select-atm exp) vx)))]
+         [(Var _) (list (Instr 'movq (list (select-atm exp) vx)))]
+         [(Prim 'read '()) (list (Callq 'read_int 0))]
+         [(Prim '- (list e)) (list (Instr 'movq (list (select-atm e) vx))
+                                   (Instr 'negq (list vx)))]
+         [(Prim '- (list e1 e2)) (list
+                                  (Instr 'movq (list (select-atm e1) (Reg 'rax)))
+                                  (Instr 'subq (list (select-atm e2) (Reg 'rax)))
+                                  (Instr 'movq (list (Reg 'rax) vx)))] ;; no optimization yet
+         [(Prim '+ (list e1 e2)) (list
+                                  (Instr 'movq (list (select-atm e1) (Reg 'rax)))
+                                  (Instr 'addq (list (select-atm e2) (Reg 'rax)))
+                                  (Instr 'movq (list (Reg 'rax) vx)))])]
+      [else (error 'stmt)]))
+  (define (select-tail p)
+    (match p
+     [(Return exp)
+       (append
+        (match exp
+          [(Int _) (list (Instr 'movq (list (select-atm exp) (Reg 'rax))))]
+          [(Var _) (list (Instr 'movq (list (select-atm exp) (Reg 'rax))))]
+          [(Prim 'read '()) (list (Callq 'read_int 0))]
+          [(Prim '- (list e)) (list (Instr 'movq (list (select-atm e) (Reg 'rax)))
+                                    (Instr 'negq (list (Reg 'rax))))]
+          [(Prim '- (list e1 e2)) (list
+                                   (Instr 'movq (list (select-atm e1) (Reg 'rax)))
+                                   (Instr 'subq (list (select-atm e2) (Reg 'rax))))]
+          [(Prim '+ (list e1 e2)) (list
+                                   (Instr 'movq (list (select-atm e1) (Reg 'rax)))
+                                   (Instr 'addq (list (select-atm e2) (Reg 'rax))))])
+        (list (Jmp 'conclusion)))]
+      [(Seq stmt tail)
+           (append (select-stmt stmt) (select-tail tail))]
+      [else (error 'tail)]))
+  (match p
+    [(CProgram info body)
+     (X86Program info (list
+                       (cons (caar body) (Block '() (select-tail (cdar body))))
+                       (cons 'conclusion (Block '() '()))))]))
+               
+; (define (f p) (select-instructions (explicate-control (remove-complex-opera* (uniquify (parse-program p))))))
 
 ;; assign-homes : pseudo-x86 -> pseudo-x86
 (define (assign-homes p)
@@ -100,9 +197,9 @@
 (define compiler-passes
   `( ("uniquify" ,uniquify ,interp-Lvar ,type-check-Lvar)
      ;; Uncomment the following passes as you finish them.
-     ;; ("remove complex opera*" ,remove-complex-opera* ,interp-Lvar ,type-check-Lvar)
-     ;; ("explicate control" ,explicate-control ,interp-Cvar ,type-check-Cvar)
-     ;; ("instruction selection" ,select-instructions ,interp-x86-0)
+     ("remove complex opera*" ,remove-complex-opera* ,interp-Lvar ,type-check-Lvar)
+     ("explicate control" ,explicate-control ,interp-Cvar ,type-check-Cvar)
+     ("instruction selection" ,select-instructions ,interp-x86-0)
      ;; ("assign homes" ,assign-homes ,interp-x86-0)
      ;; ("patch instructions" ,patch-instructions ,interp-x86-0)
      ;; ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-0)

@@ -3,7 +3,7 @@ RACKET = racket
 RM     = rm
 
 runtime.o: runtime.c runtime.h
-	$(CC) -c -g -std=c99 runtime.c
+	$(CC) -arch x86_64 -march=x86-64 -c -g -std=c99 runtime.c
 
 test: runtime.o
 	$(RACKET) run-tests.rkt

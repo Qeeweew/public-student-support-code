@@ -174,8 +174,7 @@
   (match p
     [(CProgram info body)
      (X86Program info (list
-                       (cons (caar body) (Block '() (select-tail (cdar body))))
-                       (cons 'conclusion (Block '() '()))))]))
+                       (cons (caar body) (Block '() (select-tail (cdar body))))))]))
                
 ; (define (f p) (select-instructions (explicate-control (remove-complex-opera* (uniquify (parse-program p))))))
 
@@ -207,24 +206,45 @@
 
 ;; patch-instructions : psuedo-x86 -> x86
 (define (patch-instructions p)
+  (define (assign-instr instr)
+    (match instr
+      [(Instr op (list (Deref reg1 x1) (Deref reg2 x2)))
+       (list (Instr 'movq (list (Deref reg1 x1) (Reg 'rax)))
+             (Instr op (list (Reg 'rax) (Deref reg2 x2))))]
+      [(Instr op (list (Imm y) (Deref reg x)))  ; don't know x86 details yet
+       (list (Instr 'movq (list (Imm y) (Reg 'rax)))
+             (Instr op (list (Reg 'rax) (Deref reg x))))]
+      [else (list instr)]))
+  (define (assign-block block)
+        (match block
+          [(Block info instrs) (Block info (apply append (map assign-instr instrs)))]))
   (match p
     [(X86Program info body)
      (X86Program
       info
-      (define (assign-instr instr)
-        (match instr
-          [(Instr op es) (Instr op (map assign-arg es))]
-          [else instr]))
-        (define (assign-block block)
-          (match block
-            [(Block info instrs) (Block info (map assign-instr instrs))]))
-        (map (lambda (t) ;; label . block
-               (cons (car t) (assign-block (cdr t))))
-             body)))]))
+      (map (lambda (t) ;; label . block
+             (cons (car t) (assign-block (cdr t))))
+           body))]))
 
 ;; prelude-and-conclusion : x86 -> x86
 (define (prelude-and-conclusion p)
-  (error "TODO: code goes here (prelude-and-conclusion)"))
+  (match p
+    [(X86Program info body)
+     (let* ([stack-size (* (length (car info)) 8)]
+            [prelude (cons 'main
+                           (Block '()
+                                  (list
+                                   (Instr 'pushq (list (Reg 'rbp)))
+                                   (Instr 'movq (list (Reg 'rsp) (Reg 'rbp)))
+                                   (Instr 'subq (list (Imm stack-size) (Reg 'rsp)))
+                                   (Jmp 'start))))]
+            [conclusion (cons 'conclusion
+                              (Block '()
+                                     (list
+                                      (Instr 'addq (list (Imm stack-size) (Reg 'rsp)))
+                                      (Instr 'popq (list (Reg 'rbp)))
+                                      (Retq))))])
+       (X86Program info (cons prelude (cons conclusion body))))]))
 
 ;; Define the compiler passes to be used by interp-tests and the grader
 ;; Note that your compiler file (the file that defines the passes)
@@ -236,6 +256,6 @@
      ("explicate control" ,explicate-control ,interp-Cvar ,type-check-Cvar)
      ("instruction selection" ,select-instructions ,interp-x86-0)
      ("assign homes" ,assign-homes ,interp-x86-0)
-     ;; ("patch instructions" ,patch-instructions ,interp-x86-0)
-     ;; ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-0)
+     ("patch instructions" ,patch-instructions ,interp-x86-0)
+     ("prelude-and-conclusion" ,prelude-and-conclusion ,interp-x86-0)
      ))
